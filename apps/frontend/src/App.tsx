@@ -11,16 +11,21 @@ import {
 	Plus,
 	Send,
 	Terminal,
+	Trash2,
 } from "lucide-react";
 
 function Sidebar({
 	expandedWorkspaces,
 	toggleWorkspace,
 	onCreateSession,
+	onDeleteWorkspace,
+	onDeleteSession,
 }: {
 	expandedWorkspaces: Record<string, boolean>;
 	toggleWorkspace: (workspaceId: string) => void;
 	onCreateSession: (workspaceId: string) => void;
+	onDeleteWorkspace: (workspaceId: string) => void;
+	onDeleteSession: (sessionId: string, workspaceId: string) => void;
 }) {
 	const {
 		socket,
@@ -144,22 +149,38 @@ function Sidebar({
 										</div>
 									</div>
 
-									{/* Action Button: Create Session */}
-									<button
-										type="button"
-										title="New Session"
-										disabled={!workspace.id}
-										onClick={(e) => {
-											e.stopPropagation();
-											if (workspace.id) {
-												onCreateSession(workspace.id);
-											}
-										}}
-										className="ml-2 flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-									>
-										<Plus className="w-3 h-3" />
-										<span>Session</span>
-									</button>
+									{/* Action Buttons */}
+									<div className="flex items-center gap-1 shrink-0">
+										<button
+											type="button"
+											title="New Session"
+											disabled={!workspace.id}
+											onClick={(e) => {
+												e.stopPropagation();
+												if (workspace.id) {
+													onCreateSession(workspace.id);
+												}
+											}}
+											className="ml-2 flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+										>
+											<Plus className="w-3 h-3" />
+											<span>Session</span>
+										</button>
+										<button
+											type="button"
+											title="Delete Workspace"
+											disabled={!workspace.id}
+											onClick={(e) => {
+												e.stopPropagation();
+												if (workspace.id) {
+													onDeleteWorkspace(workspace.id);
+												}
+											}}
+											className="flex items-center justify-center p-1.5 rounded bg-zinc-800 hover:bg-red-900/60 text-zinc-400 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+										>
+											<Trash2 className="w-3 h-3" />
+										</button>
+									</div>
 								</div>
 
 								{/* Accordion Content: Sessions List */}
@@ -185,27 +206,41 @@ function Sidebar({
 												const msgCount = session.messages?.length || 0;
 
 												return (
-													<button
-														type="button"
+													<div
 														key={session.id || sIdx}
-														onClick={() => {
-															setActiveSessionId(session.id);
-															setActiveWorkspaceId(workspace.id);
-														}}
-														className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-left text-xs transition-colors ${
+														className={`group w-full flex items-center justify-between px-2 py-1.5 rounded text-left text-xs transition-colors cursor-pointer ${
 															isActive
 																? "bg-blue-600/20 text-blue-300 border border-blue-500/30"
 																: "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
 														}`}
+														onClick={() => {
+															setActiveSessionId(session.id);
+															setActiveWorkspaceId(workspace.id);
+														}}
 													>
 														<div className="flex items-center gap-2 truncate">
 															<MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-70" />
 															<span className="truncate">{sessionDisplay}</span>
 														</div>
-														<span className="text-[10px] text-zinc-400 shrink-0">
-															{msgCount} {msgCount === 1 ? "msg" : "msgs"}
-														</span>
-													</button>
+														<div className="flex items-center gap-1.5 shrink-0">
+															<span className="text-[10px] text-zinc-400">
+																{msgCount} {msgCount === 1 ? "msg" : "msgs"}
+															</span>
+															{workspace.id && (
+																<button
+																	type="button"
+																	title="Delete Session"
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		onDeleteSession(session.id, workspace.id!);
+																	}}
+																	className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-900/60 hover:text-red-300 transition-colors"
+																>
+																	<Trash2 className="w-3 h-3" />
+																</button>
+															)}
+														</div>
+													</div>
 												);
 											})
 										)}
@@ -440,6 +475,32 @@ export function App() {
 		);
 	};
 
+	const handleDeleteWorkspace = (workspaceId: string) => {
+		if (!socket) return;
+
+		socket.send(
+			JSON.stringify({
+				type: "delete-workspace",
+				payload: {
+					workSpaceId: workspaceId,
+				},
+			}),
+		);
+	};
+
+	const handleDeleteSession = (sessionId: string, workspaceId: string) => {
+		if (!socket) return;
+
+		socket.send(
+			JSON.stringify({
+				type: "delete-session",
+				payload: {
+					sessionId,
+				},
+			}),
+		);
+	};
+
 	useEffect(() => {
 		if (!loading && socket) {
 			socket.onmessage = (event) => {
@@ -538,12 +599,52 @@ export function App() {
 						// Message has been acknowledged and saved to DB
 						console.log("Message persisted:", parsedData.payload);
 					}
+
+					if (parsedData.type === "workspace-deleted") {
+						const deletedWorkspaceId: string = parsedData.payload?.id;
+
+						setWorkspaces((prev) =>
+							prev.filter((w) => w.id !== deletedWorkspaceId),
+						);
+
+						if (activeWorkspaceId === deletedWorkspaceId) {
+							setActiveWorkspaceId(null);
+							setActiveSessionId(null);
+						}
+					}
+
+					if (parsedData.type === "session-deleted") {
+						const deletedSessionId: string = parsedData.payload?.id;
+
+						setWorkspaces((prev) =>
+							prev.map((w) => ({
+								...w,
+								sessions: (w.sessions || []).filter(
+									(s) => s.id !== deletedSessionId,
+								),
+							})),
+						);
+
+						if (activeSessionId === deletedSessionId) {
+							setActiveSessionId(null);
+						}
+					}
+
+					if (parsedData.type == "assistant-message"){
+						const {type, message, sessionId} = parsedData.payload;
+						setWorkspaces((prev: Workspace[])=> prev.map(w =>({
+							...w,
+							sessions: (w.sessions ?? []).map(s => s.id === sessionId? {
+								...s, messages: [...(s.messages ?? []), {role: "assistant", payload: {message, type}} as any]
+							}: s)
+						})));
+					}
 				} catch (err) {
 					console.error("Error handling WebSocket message:", err);
 				}
 			};
 		}
-	}, [loading, socket, activeSessionId]);
+	}, [loading, socket, activeSessionId, activeWorkspaceId]);
 
 	if (loading) {
 		return (
@@ -573,6 +674,8 @@ export function App() {
 					expandedWorkspaces={expandedWorkspaces}
 					toggleWorkspace={toggleWorkspace}
 					onCreateSession={handleCreateSession}
+					onDeleteWorkspace={handleDeleteWorkspace}
+					onDeleteSession={handleDeleteSession}
 				/>
 				<ChatWindow />
 			</div>

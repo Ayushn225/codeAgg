@@ -11,7 +11,8 @@ export const Session = new mongoose.Schema({
         enum: ['user', 'assistant']
     },
     conversation: [Object],
-    workspace: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace'}
+    workspace: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace'},
+    anthropicSessionId: String,
 })
 
 export const WorkSpaceModel = mongoose.model("WorkSpace", Workspace);

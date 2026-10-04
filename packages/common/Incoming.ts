@@ -19,6 +19,18 @@ export const AddMessageSchema = z.object({
 
 export type AddMessageSchemaType = z.infer<typeof AddMessageSchema>;
 
+export const DeleteWorkspaceSchema = z.object({
+    workSpaceId: z.string(),
+})
+
+export type DeleteWorkspaceSchemaType = z.infer<typeof DeleteWorkspaceSchema>;
+
+export const DeleteSessionSchema = z.object({
+    sessionId: z.string(),
+})
+
+export type DeleteSessionSchemaType = z.infer<typeof DeleteSessionSchema>;
+
 export type IncomingMessageType = {
     type: "create-workspace",
     payload: CreateWorkspaceSchemaType
@@ -28,4 +40,10 @@ export type IncomingMessageType = {
 } | {
     type: "add-message",
     payload: AddMessageSchemaType
+} | {
+    type: "delete-workspace",
+    payload: DeleteWorkspaceSchemaType
+} | {
+    type: "delete-session",
+    payload: DeleteSessionSchemaType
 };
