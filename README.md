@@ -1,159 +1,101 @@
-# Turborepo starter
+# Code Aggregator
 
-This Turborepo starter is maintained by the Turborepo core team.
+A Bun + Turborepo monorepo with a React frontend that talks to a WebSocket backend. The backend stores workspaces and sessions in MongoDB and uses the Claude Agent SDK to answer messages.
 
-## Using this example
+## Project structure
 
-Run the following command:
-
-```sh
-npx create-turbo@latest
+```text
+apps/
+  backend/    WebSocket server (ws, port 3000), MongoDB via mongoose, Claude Agent SDK
+  frontend/   React 19 + Tailwind app served by Bun (port 1573)
+packages/
+  common/     Shared message types and schemas
+  db/         Mongoose models (workspaces, sessions)
+  ui/, eslint-config/, typescript-config/   Shared tooling
 ```
 
-## What's inside?
+## Prerequisites
 
-This Turborepo includes the following packages/apps:
+- [Bun](https://bun.sh) 1.4+
+- Node.js 24+
+- [Docker](https://www.docker.com/) (to run MongoDB locally)
+- Claude credentials for the Agent SDK: either set `ANTHROPIC_API_KEY`, or be logged in to Claude Code on this machine
 
-### Apps and Packages
+## Quick start
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `@next/eslint-plugin-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+### 1. Install dependencies
 
 ```sh
-cd my-turborepo
-turbo build
+bun install
 ```
 
-Without global `turbo`, use your package manager:
+### 2. Start MongoDB in Docker
 
 ```sh
-cd my-turborepo
-npx turbo build
-bun exec turbo build
-bun exec turbo build
+docker run -d --name codeagg-mongo -p 27017:27017 -v codeagg-mongo-data:/data/db mongo
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+The `codeagg-mongo-data` volume keeps your data if the container is removed.
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+### 3. Configure the backend
 
 ```sh
-turbo build --filter=docs
+cp apps/backend/.env.example apps/backend/.env
 ```
 
-Without global `turbo`:
+Set the MongoDB connection string in `apps/backend/.env`:
 
 ```sh
-npx turbo build --filter=docs
-bun exec turbo build --filter=docs
-bun exec turbo build --filter=docs
+DB_URI=mongodb://127.0.0.1:27017/codeAgg
 ```
 
-### Develop
+If `DB_URI` is not set, the backend uses `mongodb://127.0.0.1:27017/codeAgg` by default.
 
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+### 4. Run the backend
 
 ```sh
-cd my-turborepo
-turbo dev
+cd apps/backend
+bun index.ts
 ```
 
-Without global `turbo`, use your package manager:
+The WebSocket server listens on `ws://localhost:3000`.
+
+### 5. Run the frontend
+
+In a second terminal:
 
 ```sh
-cd my-turborepo
-npx turbo dev
-bun exec turbo dev
-bun exec turbo dev
+cd apps/frontend
+bun dev
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+Open <http://localhost:1573>.
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+## Stopping and cleaning up
+
+Stop the backend and frontend with `Ctrl+C` in their terminals.
+
+Stop and remove MongoDB:
 
 ```sh
-turbo dev --filter=web
+docker stop codeagg-mongo
+docker rm codeagg-mongo
 ```
 
-Without global `turbo`:
+To free disk space, also remove the image and, if you no longer need the data, the volume:
 
 ```sh
-npx turbo dev --filter=web
-bun exec turbo dev --filter=web
-bun exec turbo dev --filter=web
+docker rmi mongo
+docker volume rm codeagg-mongo-data   # deletes all stored data
 ```
 
-### Remote Caching
+## Other scripts
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
+Run from the repo root:
 
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-bun exec turbo login
-bun exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-bun exec turbo link
-bun exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+| Command               | Description                          |
+| --------------------- | ------------------------------------ |
+| `bun run build`       | Build all apps and packages          |
+| `bun run lint`        | Lint all apps and packages           |
+| `bun run check-types` | Type-check all apps and packages     |
+| `bun run format`      | Format `.ts`, `.tsx` and `.md` files |
