@@ -1,18 +1,185 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { AppContext } from "./context/AppContext";
 import { useSocket } from "./hooks/useSocket";
+import { Markdown } from "./components/Markdown";
 import "./index.css";
-import type { Workspace, Session, Message } from "common/types";
+import type {
+	Workspace,
+	Session,
+	Message,
+	ToolCallPayload,
+	ToolResultPayload,
+} from "common/types";
 import {
+	AlertCircle,
 	ChevronDown,
 	ChevronRight,
+	FileText,
 	Folder,
+	Loader2,
 	MessageSquare,
+	Pencil,
 	Plus,
+	Search,
 	Send,
 	Terminal,
 	Trash2,
+	Wrench,
 } from "lucide-react";
+
+function toolIcon(name: string) {
+	switch (name) {
+		case "Read":
+			return FileText;
+		case "Edit":
+		case "MultiEdit":
+		case "Write":
+		case "NotebookEdit":
+			return Pencil;
+		case "Glob":
+		case "Grep":
+			return Search;
+		case "Bash":
+			return Terminal;
+		default:
+			return Wrench;
+	}
+}
+
+function CodeBlock({
+	label,
+	text,
+	tone = "neutral",
+}: {
+	label?: string;
+	text: string;
+	tone?: "neutral" | "removed" | "added" | "error";
+}) {
+	const toneClass = {
+		neutral: "bg-zinc-950 text-zinc-300 border-zinc-800",
+		removed: "bg-red-950/30 text-red-200 border-red-900/50",
+		added: "bg-green-950/30 text-green-200 border-green-900/50",
+		error: "bg-red-950/30 text-red-300 border-red-900/50",
+	}[tone];
+
+	return (
+		<div className="space-y-1">
+			{label && (
+				<div className="text-[10px] uppercase tracking-wider text-zinc-500">
+					{label}
+				</div>
+			)}
+			<pre
+				className={`max-h-96 overflow-auto rounded border p-2 text-[11px] leading-relaxed font-mono whitespace-pre ${toneClass}`}
+			>
+				{text || "(empty)"}
+			</pre>
+		</div>
+	);
+}
+
+function ToolCallAccordion({ tool }: { tool: ToolCallPayload }) {
+	const [open, setOpen] = useState(false);
+	const Icon = toolIcon(tool.name);
+	const isRunning = tool.output === undefined;
+	const input = tool.input ?? {};
+	const str = (key: string) =>
+		typeof input[key] === "string" ? (input[key] as string) : undefined;
+
+	let details: React.ReactNode;
+	if (tool.isError) {
+		details = <CodeBlock label="Error" text={tool.output ?? ""} tone="error" />;
+	} else if (tool.name === "Edit" && str("old_string") !== undefined) {
+		details = (
+			<>
+				<CodeBlock label="Removed" text={str("old_string")!} tone="removed" />
+				<CodeBlock label="Added" text={str("new_string") ?? ""} tone="added" />
+			</>
+		);
+	} else if (tool.name === "Write" && str("content") !== undefined) {
+		details = <CodeBlock label="Written content" text={str("content")!} />;
+	} else {
+		details = (
+			<>
+				{tool.name !== "Read" && (
+					<CodeBlock label="Input" text={JSON.stringify(input, null, 2)} />
+				)}
+				{!isRunning && (
+					<CodeBlock
+						label={tool.name === "Read" ? "File content" : "Output"}
+						text={tool.output ?? ""}
+					/>
+				)}
+			</>
+		);
+	}
+
+	return (
+		<div className="flex justify-start">
+			<div className="w-full max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/60 overflow-hidden">
+				<button
+					type="button"
+					onClick={() => setOpen((o) => !o)}
+					className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-zinc-800/50 transition-colors cursor-pointer"
+				>
+					{open ? (
+						<ChevronDown className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+					) : (
+						<ChevronRight className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+					)}
+					<Icon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+					<span className="font-medium text-zinc-200 shrink-0">{tool.name}</span>
+					<span
+						className="font-mono text-zinc-400 truncate"
+						title={tool.summary}
+					>
+						{tool.summary}
+					</span>
+					<span className="ml-auto shrink-0">
+						{isRunning ? (
+							<Loader2 className="w-3.5 h-3.5 text-zinc-500 animate-spin" />
+						) : tool.isError ? (
+							<AlertCircle className="w-3.5 h-3.5 text-red-400" />
+						) : null}
+					</span>
+				</button>
+				{open && (
+					<div className="border-t border-zinc-800 p-3 space-y-2">
+						{details}
+						{isRunning && (
+							<div className="text-[11px] text-zinc-500">Running…</div>
+						)}
+						{tool.truncated && (
+							<div className="text-[11px] text-zinc-500">
+								Content truncated to keep messages small.
+							</div>
+						)}
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+const ACTIVE_SESSION_KEY = "activeSessionId";
+const ACTIVE_WORKSPACE_KEY = "activeWorkspaceId";
+
+function readStored(key: string): string | null {
+	try {
+		return localStorage.getItem(key);
+	} catch {
+		return null;
+	}
+}
+
+function writeStored(key: string, value: string | null) {
+	try {
+		if (value) localStorage.setItem(key, value);
+		else localStorage.removeItem(key);
+	} catch {
+		// Storage unavailable (e.g. private mode) — selection just won't persist
+	}
+}
 
 function Sidebar({
 	expandedWorkspaces,
@@ -260,6 +427,15 @@ function ChatWindow() {
 		useContext(AppContext);
 	const [inputMessage, setInputMessage] = useState("");
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const inputRef = useRef<HTMLTextAreaElement>(null);
+
+	// Grow the textarea with its content, up to a max height
+	useEffect(() => {
+		const el = inputRef.current;
+		if (!el) return;
+		el.style.height = "auto";
+		el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+	}, [inputMessage]);
 
 	// Find the active workspace and session
 	let activeWorkspace: Workspace | null = null;
@@ -383,10 +559,24 @@ function ChatWindow() {
 				) : (
 					messages.map((msg, index) => {
 						const isUser = msg.role === "user";
+						if (!isUser && msg.payload?.type === "tool") {
+							return <ToolCallAccordion key={index} tool={msg.payload} />;
+						}
 						const content =
 							typeof msg.payload === "string"
 								? msg.payload
 								: msg.payload?.message || JSON.stringify(msg.payload);
+						const isToolCall = !isUser && content.startsWith("Tool: ");
+
+						if (isToolCall) {
+							return (
+								<div key={index} className="flex justify-center">
+									<div className="px-3 py-1 rounded-full text-xs font-mono text-zinc-400 bg-zinc-900 border border-zinc-800">
+										{content}
+									</div>
+								</div>
+							);
+						}
 
 						return (
 							<div
@@ -394,7 +584,7 @@ function ChatWindow() {
 								className={`flex ${isUser ? "justify-end" : "justify-start"}`}
 							>
 								<div
-									className={`max-w-2xl px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+									className={`max-w-2xl min-w-0 px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
 										isUser
 											? "bg-blue-600 text-white rounded-br-sm shadow-md"
 											: "bg-zinc-800 text-zinc-100 rounded-bl-sm border border-zinc-700"
@@ -403,7 +593,11 @@ function ChatWindow() {
 									<div className="text-[10px] opacity-75 mb-1 font-medium">
 										{isUser ? "You" : "Assistant"}
 									</div>
-									<div className="whitespace-pre-wrap break-words">{content}</div>
+									{isUser ? (
+										<div className="whitespace-pre-wrap break-words">{content}</div>
+									) : (
+										<Markdown text={content} />
+									)}
 								</div>
 							</div>
 						);
@@ -414,13 +608,26 @@ function ChatWindow() {
 
 			{/* Chat Input */}
 			<div className="p-4 border-t border-zinc-800 bg-zinc-900/40">
-				<form onSubmit={handleSendMessage} className="flex gap-2 items-center">
-					<input
-						type="text"
+				<form onSubmit={handleSendMessage} className="flex gap-2 items-end">
+					<textarea
+						ref={inputRef}
+						rows={1}
 						value={inputMessage}
 						onChange={(e) => setInputMessage(e.target.value)}
-						placeholder="Type a message and press Enter..."
-						className="flex-1 bg-zinc-900 border border-zinc-700/80 rounded-lg px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+						onKeyDown={(e) => {
+							// Enter sends, Shift+Enter inserts a newline.
+							// Ignore Enter while an IME composition is in progress.
+							if (
+								e.key === "Enter" &&
+								!e.shiftKey &&
+								!e.nativeEvent.isComposing
+							) {
+								e.preventDefault();
+								handleSendMessage();
+							}
+						}}
+						placeholder="Type a message… (Shift+Enter for a new line)"
+						className="flex-1 resize-none overflow-y-auto bg-zinc-900 border border-zinc-700/80 rounded-lg px-4 py-2.5 text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow]"
 					/>
 					<button
 						type="submit"
@@ -439,10 +646,21 @@ function ChatWindow() {
 export function App() {
 	const { socket, loading } = useSocket();
 	const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-	const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
-		null,
+	const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
+		readStored(ACTIVE_SESSION_KEY),
 	);
+	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
+		() => readStored(ACTIVE_WORKSPACE_KEY),
+	);
+
+	// Persist the selection so a page reload returns to the same session
+	useEffect(() => {
+		writeStored(ACTIVE_SESSION_KEY, activeSessionId);
+	}, [activeSessionId]);
+
+	useEffect(() => {
+		writeStored(ACTIVE_WORKSPACE_KEY, activeWorkspaceId);
+	}, [activeWorkspaceId]);
 	const [expandedWorkspaces, setExpandedWorkspaces] = useState<
 		Record<string, boolean>
 	>({});
@@ -519,8 +737,21 @@ export function App() {
 						});
 						setExpandedWorkspaces(initialExpanded);
 
-						// If there's an existing session and none selected, auto-select the first one
-						if (!activeSessionId) {
+						// Restore the previously selected session if it still exists,
+						// otherwise fall back to the first available session
+						const storedSessionId = readStored(ACTIVE_SESSION_KEY);
+						const restoredWorkspace = storedSessionId
+							? wsList.find((w) =>
+									w.sessions?.some((s) => s.id === storedSessionId),
+								)
+							: undefined;
+
+						if (restoredWorkspace) {
+							setActiveWorkspaceId(restoredWorkspace.id);
+							setActiveSessionId(storedSessionId);
+						} else {
+							setActiveWorkspaceId(null);
+							setActiveSessionId(null);
 							for (const w of wsList) {
 								const firstSession = w.sessions?.[0];
 								if (firstSession) {
@@ -631,12 +862,42 @@ export function App() {
 					}
 
 					if (parsedData.type == "assistant-message"){
-						const {type, message, sessionId} = parsedData.payload;
+						const { sessionId, ...payload } = parsedData.payload;
 						setWorkspaces((prev: Workspace[])=> prev.map(w =>({
 							...w,
-							sessions: (w.sessions ?? []).map(s => s.id === sessionId? {
-								...s, messages: [...(s.messages ?? []), {role: "assistant", payload: {message, type}} as any]
-							}: s)
+							sessions: (w.sessions ?? []).map(s => {
+								if (s.id !== sessionId) return s;
+								const messages = s.messages ?? [];
+
+								// Tool output: merge into the matching tool call
+								if (payload.type === "tool-result") {
+									const result = payload as ToolResultPayload;
+									return {
+										...s,
+										messages: messages.map((m) =>
+											m.role === "assistant" &&
+											m.payload?.type === "tool" &&
+											m.payload.toolUseId === result.toolUseId
+												? {
+														...m,
+														payload: {
+															...m.payload,
+															output: result.output,
+															isError: result.isError,
+															truncated:
+																m.payload.truncated || result.truncated,
+														},
+													}
+												: m,
+										),
+									};
+								}
+
+								return {
+									...s,
+									messages: [...messages, { role: "assistant", payload }],
+								};
+							})
 						})));
 					}
 				} catch (err) {

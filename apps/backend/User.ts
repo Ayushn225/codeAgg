@@ -1,10 +1,70 @@
-import { AddMessageSchema, CreateSessionSchema, CreateWorkspaceSchema, DeleteSessionSchema, DeleteWorkspaceSchema, type IncomingMessageType, type OutgoingMessageType } from "common/types";
+import { AddMessageSchema, CreateSessionSchema, CreateWorkspaceSchema, DeleteSessionSchema, DeleteWorkspaceSchema, type IncomingMessageType, type OutgoingMessageType, type ToolCallPayload, type ToolResultPayload } from "common/types";
 import { Session, SessionModel, WorkSpaceModel } from "db/client";
 import mongoose from "mongoose";
 import WebSocket from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, statSync } from "fs";
-import { isAbsolute } from "path";
+import { isAbsolute, relative } from "path";
+
+// Cap tool output so large file reads don't bloat websocket messages / Mongo docs
+const MAX_TOOL_OUTPUT_CHARS = 20_000;
+
+function truncate(text: string): { text: string, truncated: boolean } {
+    if (text.length <= MAX_TOOL_OUTPUT_CHARS) return { text, truncated: false };
+    return { text: text.slice(0, MAX_TOOL_OUTPUT_CHARS), truncated: true };
+}
+
+// Tool result content is either a string or an array of content blocks
+function toolResultToText(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+        return content
+            .map((c) => (c && typeof c === "object" && "text" in c ? String(c.text) : ""))
+            .filter(Boolean)
+            .join("\n");
+    }
+    return "";
+}
+
+// Cap long string fields (e.g. Write `content`, Edit `old_string`/`new_string`)
+// so the stored/sent input stays bounded like tool output does
+function truncateInput(input: Record<string, unknown>): { input: Record<string, unknown>, truncated: boolean } {
+    let truncated = false;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input)) {
+        if (typeof value === "string") {
+            const t = truncate(value);
+            truncated ||= t.truncated;
+            out[key] = t.text;
+        } else {
+            out[key] = value;
+        }
+    }
+    return { input: out, truncated };
+}
+
+function summarizeToolInput(name: string, input: Record<string, unknown>, cwd: string): string {
+    const str = (key: string) => (typeof input[key] === "string" ? (input[key] as string) : "");
+    const filePath = str("file_path") || str("notebook_path");
+    if (filePath) {
+        const rel = relative(cwd, filePath);
+        const shown = rel && !rel.startsWith("..") ? rel : filePath;
+        // Show partial reads as a line range, e.g. "src/App.tsx (lines 100–149)"
+        const offset = typeof input.offset === "number" ? input.offset : undefined;
+        const limit = typeof input.limit === "number" ? input.limit : undefined;
+        if (name === "Read" && (offset !== undefined || limit !== undefined)) {
+            const start = offset ?? 1;
+            return limit !== undefined ? `${shown} (lines ${start}–${start + limit - 1})` : `${shown} (from line ${start})`;
+        }
+        return shown;
+    }
+    if (str("pattern")) return str("path") ? `${str("pattern")} in ${str("path")}` : str("pattern");
+    if (str("command")) return str("command");
+    if (str("url")) return str("url");
+    if (str("query")) return str("query");
+    if (str("description")) return str("description");
+    return name;
+}
 
 export class User{
     private socket: WebSocket;
@@ -122,9 +182,67 @@ export class User{
                     for (const block of message.message.content) {
                         if ("text" in block) {
                             console.log(block.text); // Claude's reasoning
-                        } else if ("name" in block) {
-                            console.log(`Tool: ${block.name}`); // Tool being called
+                        } else if (block.type === "tool_use") {
+                            const rawInput = (block.input ?? {}) as Record<string, unknown>;
+                            const { input, truncated: inputTruncated } = truncateInput(rawInput);
+                            const toolPayload: ToolCallPayload = {
+                                type: "tool",
+                                toolUseId: block.id,
+                                name: block.name,
+                                summary: summarizeToolInput(block.name, rawInput, workspace.path),
+                                input,
+                                ...(inputTruncated ? { truncated: true } : {}),
+                            };
+                            console.log(`Tool: ${block.name} ${toolPayload.summary}`);
+
+                            this.sendMessage({
+                                type: "assistant-message",
+                                payload: { ...toolPayload, sessionId: data.sessionId },
+                            });
+
+                            await SessionModel.updateOne({
+                                _id: new mongoose.Types.ObjectId(data.sessionId)
+                            }, {
+                                $push: {
+                                    conversation: {
+                                        role: "assistant",
+                                        payload: toolPayload,
+                                    }
+                                }
+                            });
                         }
+                    }
+                } else if (message.type === "user" && Array.isArray(message.message?.content)) {
+                    // Tool results come back to the model as "user" messages
+                    for (const block of message.message.content) {
+                        if (typeof block !== "object" || block.type !== "tool_result") continue;
+
+                        const { text, truncated } = truncate(toolResultToText(block.content));
+                        const resultPayload: ToolResultPayload = {
+                            type: "tool-result",
+                            toolUseId: block.tool_use_id,
+                            output: text,
+                            isError: Boolean(block.is_error),
+                            truncated,
+                        };
+
+                        this.sendMessage({
+                            type: "assistant-message",
+                            payload: { ...resultPayload, sessionId: data.sessionId },
+                        });
+
+                        // Attach the output to the stored tool call
+                        await SessionModel.updateOne({
+                            _id: new mongoose.Types.ObjectId(data.sessionId),
+                            "conversation.payload.toolUseId": block.tool_use_id,
+                        }, {
+                            $set: {
+                                "conversation.$.payload.output": resultPayload.output,
+                                "conversation.$.payload.isError": resultPayload.isError,
+                                // Only set when true so a truncated input flag isn't cleared
+                                ...(resultPayload.truncated ? { "conversation.$.payload.truncated": true } : {}),
+                            }
+                        });
                     }
                 } else if (message.type === "result") {
                     console.log(`Done: ${message.subtype}`); // Final result

@@ -68,6 +68,30 @@ export type Workspace = {
     sessions: Session[]
 }
 
+// Payload for an assistant tool call. Sent once when the tool starts
+// (type "tool", no output yet) and again when the result arrives
+// (type "tool-result"), matched by toolUseId.
+export type ToolCallPayload = {
+    type: "tool",
+    toolUseId: string,
+    name: string,
+    // Short, human-readable description, e.g. the file path or glob pattern
+    summary: string,
+    input: Record<string, unknown>,
+    output?: string,
+    isError?: boolean,
+    // True when output was cut off to keep messages small
+    truncated?: boolean,
+}
+
+export type ToolResultPayload = {
+    type: "tool-result",
+    toolUseId: string,
+    output: string,
+    isError: boolean,
+    truncated: boolean,
+}
+
 export type Message = {
     role: "user",
     payload: {
